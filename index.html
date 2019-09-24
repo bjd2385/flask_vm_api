@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+
+</head>
+<body>
+    <div>
+        <h3>VM API v1</h3>
+        <p>This is the default page of my VM API, which has a base URL of</p>
+        <pre>http://home.bjd2385.com/api</pre>
+        <p>At this time, valid endpoints include</p>
+        <ul>
+            <li><p><code>api/list</code> with required argument(s)</p>
+                <ul>
+                    <li><p><code>hosts</code> (list)</p></li>
+                </ul>
+                <p>and optional argument(s)</p>
+                <ul>
+                    <li><p><code>status=[active|inactive]</code></p></li>
+                </ul>
+                <p>Example:</p>
+                <pre>
+(flask_vm_api) brandon@b350-gaming-pc:~/projects/flask_vm_api$ curl -X POST http://10.8.0.42:5000/api/list -H "Content-Type: application/json" -d '{"hosts":["perchost.bjd2385.com","b350-gaming-pc.bjd2385.com","routerhost.bjd2385.com"],"status":"active"}'
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time
+                                 Dload  Upload   Total   Spent    Left
+100   186  100    80  100   106     76    101  0:00:01  0:00:01 --:--:--   
+{
+  "VMs": [
+    "DC2",
+    "nomad",
+    "docker", 
+    "DC",
+    "guacamole",
+    "nginx",
+    "ubuntusql",
+    "pfsense"
+  ]
+}
+                </pre>
+                <p>So, in short, you can get a list of active domains on as many hosts as you'd like.</p>
+            </li>
+            <li><p><code>api/xml</code> with required argument(s)</p>
+            </li>
+        </ul>
+    </div>
+</body>
+</html>

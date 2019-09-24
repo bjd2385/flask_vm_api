@@ -49,6 +49,12 @@ class LVConn(ContextManager['LVConn']):
         """
         return list(set(self.getDomains()) - set(self.getActiveDomains()))
 
+    def getXML(self, domain: str) -> str:
+        """
+        Get the XML from domain.
+        """
+        return self.conn.lookupByName(domain).XMLDesc()
+
     def __exit__(self, *args: Any) -> None:
         self.close()
 

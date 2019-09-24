@@ -8,12 +8,16 @@ A simple API for spinning up VM instances on my hosts.
 from typing import Any, List, Optional
 
 from flask import Flask, redirect, request, jsonify
+from flask.wrappers import Response
 from secrets import token_hex
 from mohawk.receiver import Receiver
 
 from classes import LVConn
 
 app = Flask(__name__)
+
+
+DEFAULT_HOST = 'b350-gaming-pc.bjd2385.com'
 
 
 class Response:
@@ -54,8 +58,21 @@ def handle_invalid_usage(error: InvalidUsage) -> Any:
     return response
 
 
-@app.route('/list', methods=['POST'])
-def lst() -> str:
+@app.route('/api/', methods=['GET'])
+@app.route('/', methods=['GET'])
+def index() -> str:
+    """
+    Return the main API webpage. For now, this reads index.html from file 
+    on every request, but in the future it'll just be read into memory and 
+    serve the page in that fashion.
+    """
+    with open('index.html', 'r') as indexh:
+        index = indexh.read()
+    return index
+
+
+@app.route('/api/list', methods=['POST'])
+def lst() -> Response:
     """
     List all available VMs across the listed hosts. Return a '400 error if
     a host does not exist.
@@ -70,16 +87,76 @@ def lst() -> str:
     
     hosts = data['hosts']
     VMs = []
-    for host in hosts:
-        with LVConn(f'qemu+ssh://{host}/system') as lv:
-            VMs += lv.getDomains()
-    return jsonify({'allVMs': VMs})
+    if 'status' in data:
+        for host in hosts:
+            with LVConn(f'qemu+ssh://{host}/system') as lv:
+                if data['status'] == 'active':
+                    VMs += lv.getActiveDomains()
+                elif data['status'] == 'inactive':
+                    VMs += lv.getInactiveDomains()
+                else:
+                    raise InvalidUsage(
+                        'Must specify content \'active\' or \'inactive.\''
+                    )
+    else:
+        for host in hosts:
+            with LVConn(f'qemu+ssh://{host}/system') as lv:
+                VMs += lv.getDomains()
+    return jsonify({'VMs': VMs})
 
 
-@app.route('/create', methods=['GET'])
-def createVM() -> str:
+@app.route('/api/resources', methods=['POST'])
+def resources() -> Response:
     """
-    Create the VM.
+    Get the resources on a particular host that are being used by VMs.
+    """
+    data = request.get_json()
+
+    if not data:
+        data['hosts'] = DEFAULT_HOST
+
+    # TODO:
+    # - decide what kind of stats you want to return, including maybe
+    #   - cores requested,
+    #   - load average,
+    #   - memory requested,
+    #   - memory utilization
+    
+    response = {'stats': []}
+
+    return jsonify(response)
+
+
+@app.route('/api/xml', methods=['POST'])
+def detail() -> Response:
+    """
+    Get VMs' XML template.
+    """
+    data = request.get_json()
+
+    if 'guests' not in data:
+        raise InvalidUsage(
+            'Must provide a VM name or list of VMs from a host'
+        )
+    
+    if 'host' in data:
+        host = data['host']
+    else:
+        # Just default to my primary host.
+        host = DEFAULT_HOST
+
+    xml = dict()
+    with LVConn(f'qemu+ssh://{host}/system') as lv:
+        for vm in data['guests']:
+            xml[vm] = lv.getXML(vm)
+    
+    return jsonify(xml)
+
+
+@app.route('/api/create', methods=['POST'])
+def create() -> str:
+    """
+    Create a VM and start it on a particular host.
     """
     return "Me too!"
 
