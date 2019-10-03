@@ -121,14 +121,18 @@ def resources() -> Response:
     #   - load average,
     #   - memory requested,
     #   - memory utilization
-    
-    response = {'stats': []}
+
+    data = {}
+    hosts = data['hosts']
+    for host in hosts:
+        with LVConn(f'qemu+ssh://{host}/system') as lv:
+            data['activeCores'] = lv.getActiveCoreCount()
 
     return jsonify(response)
 
 
 @app.route('/api/xml', methods=['POST'])
-def detail() -> Response:
+def xml() -> Response:
     """
     Get VMs' XML template.
     """

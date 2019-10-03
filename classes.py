@@ -2,6 +2,8 @@
 
 from typing import ContextManager, List, Any
 
+from operator import itemgetter
+
 import libvirt as lv
 
 
@@ -43,6 +45,19 @@ class LVConn(ContextManager['LVConn']):
 
         return runningDomains
 
+    def getActiveDomainObjects(self) -> List[lv.virDomain]:
+        """
+        Return the domain objects instead of a list of names.
+
+        It's a fortunate (?) coincidence that `listDomainsID` appears to
+        only return IDs of VMs that are currently active on the node.
+        """
+        activeDomainIDs = self.conn.listDomainsID()
+        activeDomainObjs = []
+        for domainID in activeDomainIDs:
+            activeDomainObjs.append(self.conn.lookupByID(domainID))
+        return activeDomainObjs
+
     def getInactiveDomains(self) -> List[str]:
         """
         Opposite of `getActiveDomains`.
@@ -54,6 +69,28 @@ class LVConn(ContextManager['LVConn']):
         Get the XML from domain.
         """
         return self.conn.lookupByName(domain).XMLDesc()
+
+    def getActiveCores(self) -> int:
+        """
+        Get the number of assigned cores to VMs.
+        """
+        cpuCount = itemgetter(3)
+        domObjs = self.getActiveDomainObjects()
+        domObjsInfo = map(lambda obj: obj.info(), domObjs)
+        return sum(map(cpuCount, self.getActiveDomainObjects()))
+
+    def getFreeMemory(self) -> int:
+        """
+        Return the free memory in bytes.
+        """
+        return self.conn.getFreeMemory()
+
+    def getHypervisorType(self) -> str:
+        """
+        Get the name of the driver being used on this host.
+        """
+        return self.conn.getType()
+
 
     def __exit__(self, *args: Any) -> None:
         self.close()
