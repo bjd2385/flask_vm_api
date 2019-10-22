@@ -12,7 +12,7 @@ from flask.wrappers import Response
 from secrets import token_hex
 from mohawk.receiver import Receiver
 
-from classes import LVConn
+from libvirtConnector import LVConn
 
 app = Flask(__name__)
 
@@ -76,6 +76,9 @@ def lst() -> Response:
     """
     List all available VMs across the listed hosts. Return a '400 error if
     a host does not exist.
+
+    Request format:
+        /api/list?hosts=<host 1>,<host 2>&status=[active|inactive]
     """
     data = request.get_json()
         
@@ -98,11 +101,12 @@ def lst() -> Response:
                     raise InvalidUsage(
                         'Must specify content \'active\' or \'inactive.\''
                     )
+        return jsonify({'VMs': {data['status']: VMs}})
     else:
         for host in hosts:
             with LVConn(f'qemu+ssh://{host}/system') as lv:
                 VMs += lv.getDomains()
-    return jsonify({'VMs': VMs})
+        return jsonify({'VMs': {'all': VMs}})
 
 
 @app.route('/api/resources', methods=['POST'])
@@ -131,10 +135,28 @@ def resources() -> Response:
     return jsonify(response)
 
 
+@app.route('/api/create', methods=['POST'])
+def create() -> Response:
+    """
+    Create a VM on a particular host.
+
+    Request format:
+    
+        /api/create?host=<some host>&cpus=#&mem=<amount in GiB>&...
+    """
+    data = request.get_json()
+
+    return jsonify(data)
+
+
 @app.route('/api/xml', methods=['POST'])
 def xml() -> Response:
     """
     Get VMs' XML template.
+
+    Request format:
+
+        /api/xml?guests=<guest 1>,<guest 2>
     """
     data = request.get_json()
 
@@ -155,15 +177,3 @@ def xml() -> Response:
             xml[vm] = lv.getXML(vm)
     
     return jsonify(xml)
-
-
-@app.route('/api/create', methods=['POST'])
-def create() -> str:
-    """
-    Create a VM and start it on a particular host.
-    """
-    return "Me too!"
-
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
