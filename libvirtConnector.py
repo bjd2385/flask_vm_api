@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 
-from typing import ContextManager, List, Any
-
+from typing import List, Any, Dict
 from operator import itemgetter
 
 import libvirt as lv
 
 
-class LVConn(ContextManager['LVConn']):
+class LVConn:
     """
     RO-CM / wrapper for libvirt to make local system calls and extract 
     information about domains.
@@ -17,13 +16,16 @@ class LVConn(ContextManager['LVConn']):
         # 'qemu+ssh://<hostname>/system <command>'
         self.system = system
 
-    def __enter__(self) -> 'ROLibvirtConnection':
+    def __enter__(self) -> 'LVConn':
         """
         Set up the connection to libvirt; this will raise its own exception
         should the connection not be possible.
         """
         self.conn = lv.openReadOnly(self.system)
         return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.conn.close()
 
     def getDomains(self) -> List[str]:
         """
@@ -77,23 +79,33 @@ class LVConn(ContextManager['LVConn']):
         cpuCount = itemgetter(3)
         domObjs = self.getActiveDomainObjects()
         domObjsInfo = map(lambda obj: obj.info(), domObjs)
-        return sum(map(cpuCount, self.getActiveDomainObjects()))
+        return sum(map(cpuCount, domObjsInfo))
 
-    def getFreeMemory(self) -> int:
+    def getRequestedMemory(self) -> int:
         """
-        Return the free memory in bytes.
+        Return a sum of requested memory of active VMs (in kB) for a particular
+        host.
         """
-        return self.conn.getFreeMemory()
+        kb = 0
+        for domain in self.getActiveDomainObjects():
+            kb += domain.maxMemory()
+        return kb
+
+    def getHostMemoryStats(self) -> Dict[str, Dict[str, int]]:
+        """
+        Return the memory status.
+        """
+        domains = dict()
+        for domain in self.getActiveDomainObjects():
+            memStats = domain.memoryStats()
+            domains[domain.name()] = memStats
+        return domains
 
     def getHypervisorType(self) -> str:
         """
         Get the name of the driver being used on this host.
         """
         return self.conn.getType()
-
-
-    def __exit__(self, *args: Any) -> None:
-        self.close()
 
     def close(self) -> None:
         self.conn.close()
