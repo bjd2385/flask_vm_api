@@ -15,31 +15,34 @@ TODO:
        better to scale the number of cached results by the length of valid
        hosts (you never know how many you may have), then read a new file for
        each from disk as it's requested into memory.
+    5) Add schema validation on input (and output?) JSON.
+    6) Fix `resources` endpoint return structure. My goal at this time is just to
+       get the data, which I've accomplished. Later, I need to come back and
+       restructure it so it actually makes _sense_.
+    7) At points of file IO, perhaps it would make sense on cache refresh to 
+       add async IO and an async cache decorator.
+    8) Spin off a worker to go create the ZFS dataset and VM from this API's threads.
+       In other words, the API POST request would update a database and create a
+       thread, which 
 """
 
 from typing import Any, Optional, List, Dict
-from flask import Flask, request, jsonify, abort
+from flask import Flask, request, jsonify, abort, Response
 from cachetools import cached, TTLCache
 from libvirtConnector import LVConn
 from settings import env
+from ast import literal_eval
+from ipaddress import ip_address
+from http import HTTPStatus
 
 app = Flask(__name__)
-
-
-class Response:
-    OK = 200
-    Created = 201
-    BadRequest = 400
-    Unauthorized = 401
-    NotFound = 404
-    ServerError = 500
 
 
 class InvalidUsage(Exception):
     """
     Raised manually to give more context around API failures.
     """
-    status_code = Response.BadRequest
+    status_code = HTTPStatus.BAD_REQUEST
 
     def __init__(self, message: str, status_code: Optional[int] =None,
                  payload: Optional[dict] =None) -> None:
@@ -175,7 +178,6 @@ def resources() -> Response:
     data = request.get_json()
     if not data:
         data['hosts'] = env['DEFAULT_HOST']
-
     if not checkValidHosts(*data['hosts']):
         raise InvalidUsage('Must provide valid hosts.')
 
@@ -186,17 +188,17 @@ def resources() -> Response:
         access.
         """
         with open(env['UPTIME_CACHE'], 'r') as fh:
-            fhr = fh.readlines()
-            print(fhr)
-        
-        # Map this file to a dictionary.
-        servers = dict()
-        for line in fhr:
-            lineSplit = line.split(':')
-            servers[lineSplit[0]] = lineSplit[1].split(', ')
-        if any(server not in env['VALID_HOSTS'] for server in servers):
-            abort(Response.ServerError)
-        return servers
+            loadAvgs = literal_eval(fh.read().replace('\n', ''))
+
+        for server in loadAvgs:
+            loadAvgs[server] = loadAvgs[server].split(', ')
+       
+        # If this raises a 500 error to the end user, it's a sign the env
+        # was not set up properly.
+        if not all(server in env['VALID_HOSTS'] for server in loadAvgs):
+            abort(HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        return loadAvgs
 
     hostResources = dict()
     for host in data['hosts']:
@@ -213,7 +215,7 @@ def resources() -> Response:
     return jsonify({'hosts': hostResources})
 
 
-@app.route('/api/create', methods=['POST'])
+@app.route('/api/create', methods=['POST', 'GET'])
 def create() -> Response:
     """
     Create a VM on a particular host.
@@ -224,4 +226,44 @@ def create() -> Response:
     """
     data = request.get_json()
 
-    return jsonify(data)
+    # Validate all of our input fields.
+    if 'host' in data:
+        if len(data['host']) == 1 and checkValidHosts(data['host']):
+            host = data['host']
+        else:
+            raise InvalidUsage('Must provide a single valid host.')
+    else:
+        # Just default to my primary host.
+        host = env['DEFAULT_HOST']
+
+    if 'guestName' in data and data['guestName']:
+        guestName = data['guestName']
+    else:
+        raise InvalidUsage('Must provide a valid guest VM name.')
+
+    if 'ipAddress' in data:
+        try:
+            ipAddress = str(ip_address(data['ipAddress']))
+        except ValueError as err:
+            abort(HTTPStatus.BAD_REQUEST)
+            ipAddress = None
+    else:
+        raise InvalidUsage(
+            'Must provide a valid IP address to assign the guest VM.'
+        )
+
+    if 'datasetName' in data and data['datasetName']:
+        dataset = data['dataset_name']
+    else:
+        raise InvalidUsage('Must provide a valid dataset name to contain VM.')
+
+    if 'sourceSnapshot' in data and data['sourceSnapshot']:
+        sourceSnapshot = data['source_snapshot']
+    else:
+        sourceSnapshot = env['DEFAULT_SNAPSHOT']
+
+    # Now let's create the VM.
+    with LVConn(f'qemu+ssh://{host}/system') as lv:
+        template = lv.createVM(host, guestName, ipAddress, dataset, sourceSnapshot)
+
+    return jsonify({'VM': template})
