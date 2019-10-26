@@ -6,6 +6,7 @@ the API.
 
 TODO:
   1) Implement host resource checks prior to starting a VM.
+  2) Extend the `terminate` method to take down the VM's directory-based storage pool.
 """
 
 from typing import List, Any, Dict, Optional, Union
@@ -231,14 +232,17 @@ class LVConn:
             except lv.libvirtError as err:
                 return err.get_error_message()
 
+    def _createStoragePool(self) -> :
+
     @classmethod
-    def createVM(cls, host: str, guestName: str, ipAddress: str, dataset: str,
+    async def createVM(cls, host: str, guestName: str, ipAddress: str, dataset: str,
                  snapshot: str) -> Optional[str]:
         """
         Creates a VM on the requested host, given enough memory or processors are
         available. This is accomplished with the following steps:
 
-        1) Clone the machine image (MI) by cloning a snapshot.
+        1) Clone the machine image (MI) by cloning a snapshot in ZFS and inject
+           the IP address and hostname into the raw disk image `root.raw`.
         2) Add this MI's dataset as a storage pool to libvirt.
         3) Loop up the main disk image (which should be named `root.raw`), and
            inject the requested hostname and IP address into `/etc/hostname` and
@@ -257,9 +261,13 @@ class LVConn:
             A string object containing the XML template that was generated for
             this created VM.
         """
-        with DatasetManager()
+        dmh = DatasetManager(machineImage=snapshot, datasetName=dataset)
+        error, = await dmh.clone(ipAddress, guestName, host)
+        if error:
+            return error
 
         with cls(system=f'qemu+ssh://{host}/system') as _lv:
-            ...
+            _lv._createStoragePool()
+
 
         return

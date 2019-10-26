@@ -84,7 +84,7 @@ def handle_invalid_usage(error: InvalidUsage) -> Any:
 
 @app.route('/api/', methods=['GET'])
 @app.route('/', methods=['GET'])
-@cached(cache=TTLCache(maxsize=1, ttl=3600))
+@cached(cache=TTLCache(maxsize=1, ttl=env['UPTIME_CACHE_TTL']))
 def index() -> str:
     """
     Return the main API web page (cached once accessed for an hour in the
@@ -143,6 +143,17 @@ def xml() -> Response:
     Request format:
 
         /api/xml?guests=<guest 1>,<guest 2>
+
+    API Args:
+        guests: List of guests to return the template for.
+        host: The host upon which these guests reside.
+
+    Returns:
+        A JSON object of schema
+
+        {
+
+        }
     """
     data = request.get_json()
 
@@ -161,9 +172,10 @@ def xml() -> Response:
         host = env['DEFAULT_HOST']
 
     xml = dict()
+    xml['guestTemplates'] = []
     with LVConn(f'qemu+ssh://{host}/system') as lv:
         for vm in data['guests']:
-            xml[vm] = lv.getXML(vm)
+            xml['guestTemplates'].append({vm: lv.getXML(vm)})
 
     return jsonify(xml)
 
@@ -174,6 +186,14 @@ def resources() -> Response:
     Get the resources available on a list of hosts.
 
     Default host specs are returned if no others are defined.
+
+    API Args:
+        (Optional) hosts: By default, whatever the environment variable is set to.
+
+    Returns:
+        A JSON object of the schema:
+
+        TODO: Fill out schema once #6 above has been resolved.
     """
     data = request.get_json()
     if not data:
@@ -223,6 +243,20 @@ def create() -> Response:
     Request format:
     
         /api/create?host=<some host>&cpus=#&mem=<amount in GiB>&...
+
+    API Args:
+        host: Host upon which to create a VM.
+        guestName: Guest VM's hostname to inject.
+        ipAddress: The IP address to inject.
+        datasetName: Dataset name to clone to.
+        sourceSnapshot: MI from which to create the guest.
+
+    Returns:
+        A JSON object of the schema
+
+        {
+            "VM": "<XML doc from the guest>"
+        }
     """
     data = request.get_json()
 

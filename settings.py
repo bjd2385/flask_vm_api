@@ -18,7 +18,9 @@ env = {
     'VALID_HOSTS': os.getenv('VALID_HOSTS').split(';'),
     'API_BACKEND_USER': os.getenv('API_BACKEND_USER'),
     'UPTIME_CACHE_TTL': os.getenv('UPTIME_CACHE_TTL'),
-    'UPTIME_CACHE': os.getenv('UPTIME_CACHE')
+    'UPTIME_CACHE': os.getenv('UPTIME_CACHE'),
+    'REMOTE_LOOP_MOUNTPOINT': os.getenv('REMOTE_LOOP_MOUNTPOINT'),
+    'REMOTE_LOOP_USER': os.getenv('REMOTE_LOOP_USER')
 }
 
 env['VALID_HOSTS_MAX'] = len(env['VALID_HOSTS'])
