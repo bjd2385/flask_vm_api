@@ -1,0 +1,29 @@
+<domain type='kvm'>
+  <name>test-DELETE</name>
+  <uuid>3a649e68-f8ee-11e9-b515-7b7b3d193903</uuid>
+  <memory unit='KiB'>1048576</memory>
+  <currentMemory unit='KiB'>1048576</currentMemory>
+  <vcpu placement='static'>1</vcpu>
+  <os>
+    <type arch='x86_64' machine='pc-i440fx-bionic'>hvm</type>
+    <boot dev='hd'/>
+  </os>
+  <devices>
+    <emulator>/usr/bin/kvm-spice</emulator>
+    <disk type='file' device='disk'>
+      <source file='/homePool/home/VMs/test-DELETE/root.raw'/>
+      <target dev='hda'/>
+    </disk>
+    <interface type='bridge'>
+      <source bridge='vmbr0'/>
+      <model type='virtio'/>
+    </interface>
+    <graphics type='spice' autoport='yes'>
+      <listen type='address'/>
+      <image compression='off'/>
+    </graphics>
+    <memballoon model='virtio'/>
+    <input type='tablet' bus='usb'/>
+    <input type='mouse' bus='ps2'/>
+  </devices>
+</domain>

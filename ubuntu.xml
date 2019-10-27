@@ -1,0 +1,29 @@
+<domain type='kvm'>
+  <name>{0}</name>
+  <uuid>{1}</uuid>
+  <memory unit='KiB'>{2}</memory>
+  <currentMemory unit='KiB'>{3}</currentMemory>
+  <vcpu placement='static'>{4}</vcpu>
+  <os>
+    <type arch='x86_64' machine='pc-i440fx-bionic'>hvm</type>
+    <boot dev='hd'/>
+  </os>
+  <devices>
+    <emulator>/usr/bin/kvm-spice</emulator>
+    <disk type='file' device='disk'>
+      <source file='{5}'/>
+      <target dev='hda'/>
+    </disk>
+    <interface type='bridge'>
+      <source bridge='{7}'/>
+      <model type='virtio'/>
+    </interface>
+    <graphics type='spice' autoport='yes'>
+      <listen type='address'/>
+      <image compression='off'/>
+    </graphics>
+    <memballoon model='virtio'/>
+    <input type='tablet' bus='usb'/>
+    <input type='mouse' bus='ps2'/>
+  </devices>
+</domain>

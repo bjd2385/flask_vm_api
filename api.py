@@ -23,17 +23,21 @@ TODO:
        add async IO and an async cache decorator.
     8) Spin off a worker to go create the ZFS dataset and VM from this API's threads.
        In other words, the API POST request would update a database and create a
-       thread, which 
+       thread, which
+    9) Refactor so that Libvirt connections are opened to all available hosts from
+       the start, as opposed to opening them and tearing them down for every request.
 """
 
 from typing import Any, Optional, List, Dict
 from flask import Flask, request, jsonify, abort, Response
 from cachetools import cached, TTLCache
-from libvirtConnector import LVConn
-from settings import env
 from ast import literal_eval
 from ipaddress import ip_address
 from http import HTTPStatus
+
+from libvirtConnector import LVConn
+from settings import env
+
 
 app = Flask(__name__)
 

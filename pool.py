@@ -8,6 +8,7 @@ Simple ZPool dataset manager for VMs.
 from typing import List, Union, Optional
 from asyncio.subprocess import PIPE, create_subprocess_shell
 from settings import env
+from  functools import lru_cache
 
 import re
 
@@ -21,9 +22,10 @@ class DatasetManager:
     the VM API.
     """
 
-    def __init__(self, machineImage: str, datasetName: str) -> None:
+    def __init__(self, machineImage: str, datasetName: str, host: Optional[str] =None) -> None:
         self.machineImage = machineImage
         self.datasetName = datasetName
+        self.hostString = f'ssh {host} ' if host else ''
 
         if len(self.datasetName) > 1 and self.datasetName[-1] == '/':
             self.datasetName = self.datasetName[:-1]
@@ -48,24 +50,41 @@ class DatasetManager:
 
         return stdout
 
-    async def clone(self, ip: str, hostname: str, host: Optional[str] = None) -> Union[List[str], str]:
+    async def clone(self) -> Optional[str]:
         """
         Asynchronously clone a dataset by making a call to shell (possibly even to
         a remote host).
 
-        Args:
-            ip: IP address to inject into the mounted raw image loop.
-            hostname: Host name to inject into the mounted raw image loop.
-            host: Optional host on which to execute this external call.
+        Returns:
+            Nothing if successful, a string with the error message otherwise.
         """
-        hostString = f'ssh {host} ' if host else ''
+        try:
+            await self._getIO(self.hostString + f'zfs clone {self.machineImage} {self.datasetName}')
+        except ValueError as err:
+            return f'Error {err}'
+
+    async def inject(self, ip: str, hostname: str) -> Optional[str]:
+        """
+        Inject properties into the cloned disk image.
+
+        Args:
+            ip:
+            hostname:
+
+        Returns:
+            An optional string, if there was an error during injection.
+        """
         loop = []
         try:
-            await self._getIO(hostString + f'zfs clone {self.machineImage} {self.datasetName}')
-            loop = await self._getIO(hostString + f'losetup -fvP --show /{self.datasetName}/root.raw')
-            await self._getIO(hostString + f'mount {loop[0]}p1 {env["REMOTE_LOOP_MOUNTPOINT"]}')
-            await self._getIO(hostString + f'\'echo "    address {ip}" >> {env["REMOTE_LOOP_MOUNTPOINT"]}/etc/network/interfaces\'')
-            await self._getIO(hostString + f'\'echo {hostname} > {env["REMOTE_LOOP_MOUNTPOINT"]}/etc/hostname\'')
+            mountPoint = await self.getMountPoint()
+
+            # Loop up the `root.raw` disk image and inject our properties.
+            loop = await self._getIO(self.hostString + f'losetup -fvP --show {mountPoint}/root.raw')
+            await self._getIO(self.hostString + f'mount {loop[0]}p1 {env["REMOTE_LOOP_MOUNTPOINT"]}')
+
+            # Now inject data into the disk image.
+            await self._getIO(self.hostString + f'\'echo "    address {ip}" >> {env["REMOTE_LOOP_MOUNTPOINT"]}/etc/network/interfaces\'')
+            await self._getIO(self.hostString + f'\'echo {hostname} > {env["REMOTE_LOOP_MOUNTPOINT"]}/etc/hostname\'')
         except ValueError as err:
             return f'Error {err}'
         finally:
@@ -77,11 +96,25 @@ class DatasetManager:
             #     use the device is found by lsof(8) or fuser(1).)
             #     cannot unmount '/VMPool/test-DELETE': umount failed
             try:
-                await self._getIO(hostString + f'umount {env["REMOTE_LOOP_MOUNTPOINT"]}')
-                await self._getIO(hostString + f'losetup -d {loop[0]}')
+                await self._getIO(self.hostString + f'umount {env["REMOTE_LOOP_MOUNTPOINT"]}')
+                await self._getIO(self.hostString + f'losetup -d {loop[0]}')
             except ValueError:
                 # We don't care if they didn't exist. Still work checking.
                 pass
+
+    @lru_cache()
+    async def getMountPoint(self) -> str:
+        """
+        Get the mount point of the dataset this instance encapsulates and cache it.
+
+        Returns:
+            String containing the path associated with the dataset.
+        """
+        try:
+            mp = await self._getIO(self.hostString + f'zfs get mountpoint {self.datasetName} -Ho value')
+            return mp[0]
+        except ValueError as err:
+            return f'Error {err}'
 
 
 if __name__ == '__main__':
@@ -89,11 +122,13 @@ if __name__ == '__main__':
 
 
     async def getResults() -> None:
-        snap = 'VMPool/images/OpenVPN-network-stack@1571310605'
+        snap = 'VMPool/images/ubuntu_16@1567873253'
         dataset = 'VMPool/test-DELETE'
-        dmh = DatasetManager(snap, dataset)
-        call = await dmh.clone(host='root@perchost.bjd2385.com', ip='192.168.2.150', hostname='test')
-        print(call)
+        dmh = DatasetManager(snap, dataset, host='root@perchost.bjd2385.com')
+        call1 = await dmh.clone()
+        call2 = await dmh.inject(ip='192.168.2.156', hostname='guest_vm')
+
+        print(call1, call2)
 
 
     run(getResults())

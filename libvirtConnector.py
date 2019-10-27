@@ -7,14 +7,22 @@ the API.
 TODO:
   1) Implement host resource checks prior to starting a VM.
   2) Extend the `terminate` method to take down the VM's directory-based storage pool.
+     - as an additional note, over in the `virStoragePool` class in the `createXML`
+       method, there's a `virStorageVolFree` that needs to be called (?) following
+       deleting a pool.
+  3) Work with virt-sysprep for creating MIs.
 """
 
-from typing import List, Any, Dict, Optional, Union
+from typing import List, Any, Dict, Optional, Union, Awaitable
 from operator import itemgetter
+from functools import lru_cache
 
 from pool import DatasetManager
+from settings import env
 
 import libvirt as lv
+import socket
+import uuid
 
 
 class LVConn:
@@ -232,42 +240,121 @@ class LVConn:
             except lv.libvirtError as err:
                 return err.get_error_message()
 
-    def _createStoragePool(self) -> :
+    @staticmethod
+    @lru_cache(maxsize=25)
+    async def _readBaseXML(fn: str) -> str:
+        """
+        Cache the default directory-type storage pool definition from disk.
+
+        Args:
+            fn: Name of the file to read.
+
+        Returns:
+            The base XML for defining a storage pool as a string.
+        """
+        async with open(fn, 'r') as fh:
+            return await fh.read()
+
+    async def _createStoragePool(self, pooln: str, path: str,
+                                 fn: str =env['DEFAULT_POOL_DEFINITION_PATH']) -> str:
+        """
+        Create a directory-type pool in libvirt.
+
+        Args:
+            fn: File name to open and cache for future use.
+            pooln: Name of the pool to create (should be the host name of the VM).
+            path: Path of the ZFS dataset (`zfs get mountpoint <dataset>`).
+
+        Returns:
+            The resulting XML configuration of the pool.
+        """
+        baseDef = await self._readBaseXML(fn)
+        baseDef.format(pooln, path)
+        pool = await self.conn.storagePoolDefineXML(baseDef)
+        await pool.setAutostart(1)
+        return await self.conn.storagePoolLookupByName(pooln)
+
+    async def _createVMFromTemplate(self, name: str, memory: int, disk: str,
+                                    bridge: str, cpus: int =1, template: str ='ubuntu.xml'):
+        """
+        Create a VM from the default template (for now this is only ubuntu.xml).
+
+        Args:
+            name: Name of the domain.
+            memory: Memory (in MiB) to give the domain.
+            disk: Path to the disk image file.
+            bridge: Bridge interface to use.
+            cpus: Number of CPUs to give the domain.
+
+        Returns:
+            The resulting XML template for the created VM.
+        """
+        baseDef = await self._readBaseXML(template)
+        mem_kiB = memory * 2 ** 10
+        baseDef.format(name, str(uuid.uuid1()), mem_kiB, mem_kiB, cpus, disk, bridge)
 
     @classmethod
-    async def createVM(cls, host: str, guestName: str, ipAddress: str, dataset: str,
-                 snapshot: str) -> Optional[str]:
+    async def createVM(cls, dataset: str, snapshot: str, host: str, guestName: Optional[str],
+                       ipAddress: Optional[str], bridge: str, memory: int =2048,
+                       cpus: int =1) -> Optional[str]:
         """
         Creates a VM on the requested host, given enough memory or processors are
         available. This is accomplished with the following steps:
 
-        1) Clone the machine image (MI) by cloning a snapshot in ZFS and inject
-           the IP address and hostname into the raw disk image `root.raw`.
-        2) Add this MI's dataset as a storage pool to libvirt.
-        3) Loop up the main disk image (which should be named `root.raw`), and
+        1) Clone the machine image (MI) by cloning a snapshot in ZFS.
+        2) Loop up the main disk image (which should be named `root.raw`), and
            inject the requested hostname and IP address into `/etc/hostname` and
            `/etc/network/interfaces`. This is the only currently-supported
            method.
+        3) Add this MI's dataset as a storage pool to libvirt. (You can view the
+           current set of storage pools on any individual host by running
+           `virsh pool-list`.)
         4) And, finally, generate a (basic) VM template. The VM is not started by
            default (but you can use the API to interact with this requested VM).
 
         Args:
+            guestName: Guest host name to inject into the raw MI.
             host: IP or FQDN by which libvirt can reach the host.
             ipAddress: IP address to be assigned to the guest VM.
             dataset: ZFS dataset to hold this VM's virtual disks.
             snapshot: ZFS snapshot (effectively a MI) to clone.
+            bridge: Name of the bridged interface to use.
+            memory: Amount of memory (in MiB) to assign the VM.
+            cpus: Number of CPUs to assign the guest (by default, 1).
 
         Returns:
             A string object containing the XML template that was generated for
-            this created VM.
+            this created VM and pool XML template.
         """
-        dmh = DatasetManager(machineImage=snapshot, datasetName=dataset)
-        error, = await dmh.clone(ipAddress, guestName, host)
+        if guestName and not ipAddress:
+            try:
+                ipAddress = socket.gethostbyname(guestName)
+            except socket.gaierror as err:
+                return f'Guest host name does not have a corresponding DNS A record: {err}'
+        elif ipAddress and not guestName:
+            try:
+                guestName = socket.gethostbyaddr(ipAddress)
+            except socket.herror as err:
+                return f'Guest host IP address does not have corresponding DNS A record: {err}'
+        elif not ipAddress and not guestName:
+            return f'Must provide either ipAddress or guestName.'
+
+        # Clone the MI.
+        dmh = DatasetManager(machineImage=snapshot, datasetName=dataset, host=host)
+        error = await dmh.clone()
         if error:
             return error
 
-        with cls(system=f'qemu+ssh://{host}/system') as _lv:
-            _lv._createStoragePool()
+        # Inject our properties into the VM's raw root image.
+        error = await dmh.inject(ip=ipAddress, hostname=guestName)
+        if error:
+            return error
 
+        # Create the storage pool in LV and the VM.
+        async with cls(system=f'qemu+ssh://{host}/system') as _lv:
+            # This would be cached at this point, should be fast.
+            path = await dmh.getMountPoint()
+            config = await _lv._createStoragePool(guestName, path)
+            vm = await _lv.createVMFromTemplate()
 
         return
