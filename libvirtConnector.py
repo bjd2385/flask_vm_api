@@ -1,3 +1,4 @@
+#! /usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
@@ -6,23 +7,27 @@ the API.
 
 TODO:
   1) Implement host resource checks prior to starting a VM.
-  2) Extend the `terminate` method to take down the VM's directory-based storage pool.
+  2) Extend the `terminate` method to take down the VM's directory-based storage
+     pool.
      - as an additional note, over in the `virStoragePool` class in the `createXML`
        method, there's a `virStorageVolFree` that needs to be called (?) following
        deleting a pool.
   3) Work with virt-sysprep for creating MIs.
+     - Another requirement for MIs: interface renaming needs to be disabled in grub.
+        - https://unix.stackexchange.com/a/396383
 """
 
-from typing import List, Any, Dict, Optional, Union, Awaitable
+from typing import List, Any, Dict, Optional, Union, Tuple
 from operator import itemgetter
-from functools import lru_cache
 
 from pool import DatasetManager
 from settings import env
+from utils import asyncCachedTimedFileIO
 
 import libvirt as lv
 import socket
 import uuid
+import re
 
 
 class LVConn:
@@ -30,17 +35,31 @@ class LVConn:
     CM / wrapper for libvirt to make local system calls and extract
     information about domains.
     """
+    _hostR = re.compile(r'(?<=//)[a-zA-Z0-9.@]*(?=/system)')
+
     def __init__(self, system: str ='qemu:///system') -> None:
         # Other hosts may be referenced as
         # 'qemu+ssh://<hostname>/system <command>'
         self.system = system
 
+        host = re.search(LVConn._hostR, system)
+        if host:
+            self.host = host.group(0)
+        else:
+            self.host = env['DEFAULT_HOST']
+
     def __enter__(self) -> 'LVConn':
         """
-        Set up the connection to libvirt; this will raise its own exception
-        should the connection not be possible.
+        Set up the connection to libvirt; this will raise its own exception should
+        the connection not be possible.
+
+        Raises:
+            libvirt.libvirtError: If a connection to the desired host could not be
+            established.
         """
         self.conn = lv.open(self.system)
+        if not self.conn:
+            raise lv.libvirtError(f'Could not open connection to {self.system}.')
         return self
 
     def __exit__(self, *args: Any) -> None:
@@ -79,8 +98,8 @@ class LVConn:
         """
         Produce domain objects instead of a list of names.
 
-        It's a fortunate (?) coincidence that `listDomainsID` appears to
-        only return IDs of VMs that are currently active on the node.
+        It's a fortunate (?) coincidence that `listDomainsID` appears to only return
+        IDs of VMs that are currently active on the node.
         
         Returns:
             A list of active libvirt virtual domain objects for further 
@@ -123,7 +142,8 @@ class LVConn:
         cpuCount = itemgetter(3)
         domObjs = self._getActiveDomainObjects()
         domObjsInfo = map(lambda obj: obj.info(), domObjs)
-        return sum(map(cpuCount, domObjsInfo))
+        count = sum(map(cpuCount, domObjsInfo))
+        return count
 
     def getRequestedMemory(self) -> int:
         """
@@ -240,22 +260,7 @@ class LVConn:
             except lv.libvirtError as err:
                 return err.get_error_message()
 
-    @staticmethod
-    @lru_cache(maxsize=25)
-    async def _readBaseXML(fn: str) -> str:
-        """
-        Cache the default directory-type storage pool definition from disk.
-
-        Args:
-            fn: Name of the file to read.
-
-        Returns:
-            The base XML for defining a storage pool as a string.
-        """
-        async with open(fn, 'r') as fh:
-            return await fh.read()
-
-    async def _createStoragePool(self, pooln: str, path: str,
+    def _createStoragePool(self, pooln: str, path: str,
                                  fn: str =env['DEFAULT_POOL_DEFINITION_PATH']) -> str:
         """
         Create a directory-type pool in libvirt.
@@ -268,14 +273,14 @@ class LVConn:
         Returns:
             The resulting XML configuration of the pool.
         """
-        baseDef = await self._readBaseXML(fn)
-        baseDef.format(pooln, path)
-        pool = await self.conn.storagePoolDefineXML(baseDef)
-        await pool.setAutostart(1)
-        return await self.conn.storagePoolLookupByName(pooln)
+        baseDef = asyncCachedTimedFileIO(fn)
+        pool = self.conn.storagePoolDefineXML(baseDef.format(pooln, path))
+        print(dir(pool))
+        pool.setAutostart(1)
+        return self.conn.storagePoolLookupByName(pooln)
 
-    async def _createVMFromTemplate(self, name: str, memory: int, disk: str,
-                                    bridge: str, cpus: int =1, template: str ='ubuntu.xml'):
+    def _createVMFromTemplate(self, name: str, memory: int, disk: str, bridge: str,
+                cpus: int =1, template: str ='ubuntu.xml') -> Union[Tuple[str, str], str]:
         """
         Create a VM from the default template (for now this is only ubuntu.xml).
 
@@ -289,14 +294,15 @@ class LVConn:
         Returns:
             The resulting XML template for the created VM.
         """
-        baseDef = await self._readBaseXML(template)
+        baseDef = asyncCachedTimedFileIO(template)
         mem_kiB = memory * 2 ** 10
-        baseDef.format(name, str(uuid.uuid1()), mem_kiB, mem_kiB, cpus, disk, bridge)
+        template = baseDef.format(name, str(uuid.uuid1()), mem_kiB, mem_kiB, cpus, disk, bridge)
+        self.conn.defineXML(template)
+        return self.getXML(domain=name)
 
-    @classmethod
-    async def createVM(cls, dataset: str, snapshot: str, host: str, guestName: Optional[str],
+    async def createVM(self, dataset: str, snapshot: str, guestName: Optional[str],
                        ipAddress: Optional[str], bridge: str, memory: int =2048,
-                       cpus: int =1) -> Optional[str]:
+                       cpus: int =1, template: str ='ubuntu') -> Optional[str]:
         """
         Creates a VM on the requested host, given enough memory or processors are
         available. This is accomplished with the following steps:
@@ -330,17 +336,19 @@ class LVConn:
             try:
                 ipAddress = socket.gethostbyname(guestName)
             except socket.gaierror as err:
-                return f'Guest host name does not have a corresponding DNS A record: {err}'
+                return f'Guest host name does not have a corresponding DNS A ' \
+                       f'record: {err}'
         elif ipAddress and not guestName:
             try:
                 guestName = socket.gethostbyaddr(ipAddress)
             except socket.herror as err:
-                return f'Guest host IP address does not have corresponding DNS A record: {err}'
+                return f'Guest host IP address does not have corresponding DNS A ' \
+                       f'record: {err}'
         elif not ipAddress and not guestName:
             return f'Must provide either ipAddress or guestName.'
 
         # Clone the MI.
-        dmh = DatasetManager(machineImage=snapshot, datasetName=dataset, host=host)
+        dmh = DatasetManager(machineImage=snapshot, datasetName=dataset, host=self.host)
         error = await dmh.clone()
         if error:
             return error
@@ -350,11 +358,37 @@ class LVConn:
         if error:
             return error
 
-        # Create the storage pool in LV and the VM.
-        async with cls(system=f'qemu+ssh://{host}/system') as _lv:
-            # This would be cached at this point, should be fast.
-            path = await dmh.getMountPoint()
-            config = await _lv._createStoragePool(guestName, path)
-            vm = await _lv.createVMFromTemplate()
+        # Create the storage pool in LV.
+        path = await dmh.getMountPoint()
+        print(path)
+        config = self._createStoragePool(guestName, path)
 
-        return
+        # Now create the VM on that storage pool.
+        vm = self._createVMFromTemplate(
+            guestName,
+            memory,
+            f'{path}/root.raw',
+            bridge,
+            cpus,
+            f'{env["VM_TEMPLATES_DIR"]}/{template}.xml'
+        )
+
+        return vm
+
+
+if __name__ == '__main__':
+    import asyncio
+
+    async def exampleCreation() -> None:
+        with LVConn('qemu+ssh://root@perchost.bjd2385.com/system') as lv:
+            return await lv.createVM(
+                dataset='VMPool/test_1',
+                snapshot='VMPool/images/kubernetes@base-mi-no-iface-rename-grub',
+                guestName='test_1',
+                ipAddress='192.168.2.156',
+                bridge='br0',
+                memory=1024,
+                cpus=1
+            )
+
+    print(asyncio.run(exampleCreation()))

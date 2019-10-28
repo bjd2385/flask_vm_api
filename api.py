@@ -5,8 +5,8 @@
 A simple API for spinning up VM instances on my hosts.
 
 TODO:
-    1) Implement field schema parser to ensure additional fields can't be
-       added to a request.
+    1) Implement field schema parser to ensure additional fields can't be added
+       to a request.
     2) Cache all host-level calls.
     3) Add a restricted user for host-level calls / information gathering. Problem
        is, I don't know how to implement this; thoughts are, maybe a restricted user
@@ -26,17 +26,20 @@ TODO:
        thread, which
     9) Refactor so that Libvirt connections are opened to all available hosts from
        the start, as opposed to opening them and tearing them down for every request.
+    10) Refactor with cached async functions?
 """
 
 from typing import Any, Optional, List, Dict
 from flask import Flask, request, jsonify, abort, Response
-from cachetools import cached, TTLCache
 from ast import literal_eval
 from ipaddress import ip_address
 from http import HTTPStatus
+from cachetools import cached, TTLCache
+from asyncio import run
 
 from libvirtConnector import LVConn
 from settings import env
+from utils import asyncCachedTimedFileIO
 
 
 app = Flask(__name__)
@@ -62,7 +65,7 @@ class InvalidUsage(Exception):
         return rv
 
 
-def checkValidHosts(*hosts: List[str]) -> bool:
+def checkValidHosts(*hosts: str) -> bool:
     """
     Verify requested hosts against acceptable hosts env variable.
 
@@ -70,10 +73,13 @@ def checkValidHosts(*hosts: List[str]) -> bool:
     greater than the number of valid hosts, followed by
     2) a check to ensure each requested host is in the valid hosts env var.
 
-    Returns `True` if it's a valid host, as compared against the env.
+    Args:
+        Any number of hosts.
+
+    Returns:
+        `True` if it's a valid host, as compared against the env.
     """
-    return len(hosts) <= env['VALID_HOSTS_MAX'] and \
-           all(host in env['VALID_HOSTS'] for host in hosts)
+    return len(hosts) <= env['VALID_HOSTS_MAX'] and all(host in env['VALID_HOSTS'] for host in hosts)
 
 
 @app.errorhandler(InvalidUsage)
@@ -88,14 +94,12 @@ def handle_invalid_usage(error: InvalidUsage) -> Any:
 
 @app.route('/api/', methods=['GET'])
 @app.route('/', methods=['GET'])
-@cached(cache=TTLCache(maxsize=1, ttl=env['UPTIME_CACHE_TTL']))
 def index() -> str:
     """
     Return the main API web page (cached once accessed for an hour in the
     server's memory).
     """
-    with open('index.html', 'r') as indexh:
-        ind = indexh.read()
+    ind = asyncCachedTimedFileIO('static_html_pages/index.html')
     return ind
 
 
@@ -107,6 +111,21 @@ def lst() -> Response:
 
     Request format:
         /api/list?hosts=<host 1>,<host 2>&status=[active|inactive]
+
+    Returns:
+        A JSON string of schema
+
+        {
+            "VMs": {
+                "<active|inactive|all>": [
+                    "VM_1",
+                    ...
+                ]
+            }
+        }
+
+        containing a list of either active, inactive, or simply all VMs across the
+        defined list of hosts in env.
     """
     data = request.get_json()
 
@@ -156,7 +175,13 @@ def xml() -> Response:
         A JSON object of schema
 
         {
-
+            <host>:
+                "guestTemplates": [
+                    {
+                        <VM_1>: "template",
+                    }
+                    ...
+                ]
         }
     """
     data = request.get_json()
@@ -167,7 +192,7 @@ def xml() -> Response:
         )
 
     if 'host' in data:
-        if len(data['host']) == 1 and checkValidHosts(data['host']):
+        if checkValidHosts(data['host']):
             host = data['host']
         else:
             raise InvalidUsage('Must provide a single valid host.')
@@ -181,7 +206,27 @@ def xml() -> Response:
         for vm in data['guests']:
             xml['guestTemplates'].append({vm: lv.getXML(vm)})
 
-    return jsonify(xml)
+    return jsonify({data['host']: xml})
+
+
+@cached(cache=TTLCache(maxsize=1, ttl=env['UPTIME_CACHE_TTL']))
+def uptimeCache() -> Dict[str, List[float]]:
+    """
+    Read the uptime on-disk cache and cache it in memory for quicker
+    access.
+    """
+    with open(env['UPTIME_CACHE'], 'r') as fh:
+        loadAvgs = literal_eval(fh.read().replace('\n', ''))
+
+    for server in loadAvgs:
+        loadAvgs[server] = loadAvgs[server].split(', ')
+
+    # If this raises a 500 error to the end user, it's a sign the env
+    # was not set up properly.
+    if not all(server in env['VALID_HOSTS'] for server in loadAvgs):
+        abort(HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    return loadAvgs
 
 
 @app.route('/api/resources', methods=['POST'])
@@ -205,25 +250,6 @@ def resources() -> Response:
     if not checkValidHosts(*data['hosts']):
         raise InvalidUsage('Must provide valid hosts.')
 
-    @cached(cache=TTLCache(maxsize=1, ttl=300))
-    def uptimeCache() -> Dict[str, List[float]]:
-        """
-        Read the uptime on-disk cache and cache it in memory for quicker 
-        access.
-        """
-        with open(env['UPTIME_CACHE'], 'r') as fh:
-            loadAvgs = literal_eval(fh.read().replace('\n', ''))
-
-        for server in loadAvgs:
-            loadAvgs[server] = loadAvgs[server].split(', ')
-       
-        # If this raises a 500 error to the end user, it's a sign the env
-        # was not set up properly.
-        if not all(server in env['VALID_HOSTS'] for server in loadAvgs):
-            abort(HTTPStatus.INTERNAL_SERVER_ERROR)
-
-        return loadAvgs
-
     hostResources = dict()
     for host in data['hosts']:
         hostState = {}
@@ -239,7 +265,7 @@ def resources() -> Response:
     return jsonify({'hosts': hostResources})
 
 
-@app.route('/api/create', methods=['POST', 'GET'])
+@app.route('/api/create', methods=['POST'])
 def create() -> Response:
     """
     Create a VM on a particular host.
@@ -259,20 +285,22 @@ def create() -> Response:
         A JSON object of the schema
 
         {
-            "VM": "<XML doc from the guest>"
+            "<host>": {
+                "template": "<XML doc from the guest>"
+            }
         }
     """
     data = request.get_json()
-
+    print(data)
     # Validate all of our input fields.
     if 'host' in data:
-        if len(data['host']) == 1 and checkValidHosts(data['host']):
-            host = data['host']
+        if checkValidHosts(data['host']):
+            host = f'root@{data["host"]}'
         else:
             raise InvalidUsage('Must provide a single valid host.')
     else:
         # Just default to my primary host.
-        host = env['DEFAULT_HOST']
+        host = f'root@{env["DEFAULT_HOST"]}'
 
     if 'guestName' in data and data['guestName']:
         guestName = data['guestName']
@@ -291,17 +319,60 @@ def create() -> Response:
         )
 
     if 'datasetName' in data and data['datasetName']:
-        dataset = data['dataset_name']
+        dataset = data['datasetName']
     else:
         raise InvalidUsage('Must provide a valid dataset name to contain VM.')
 
     if 'sourceSnapshot' in data and data['sourceSnapshot']:
-        sourceSnapshot = data['source_snapshot']
+        sourceSnapshot = data['sourceSnapshot']
     else:
         sourceSnapshot = env['DEFAULT_SNAPSHOT']
 
+    if 'bridge' in data and data['bridge']:
+        bridge = data['bridge']
+    else:
+        raise InvalidUsage('Must define bridge interface to use')
+
+    if 'memory' in data and data['memory']:
+        try:
+            memory = int(data['memory'])
+        except TypeError as err:
+            abort(HTTPStatus.BAD_REQUEST)
+            memory = None
+    else:
+        memory = 1024
+
+    if 'cpus' in data and data['cpus']:
+        try:
+            cpus = int(data['cpus'])
+        except TypeError as err:
+            abort(HTTPStatus.BAD_REQUEST)
+            cpus = None
+    else:
+        cpus = 1
+
+    if 'template' in data and data['template']:
+        template = data['template']
+    else:
+        template = 'ubuntu'
+
     # Now let's create the VM.
     with LVConn(f'qemu+ssh://{host}/system') as lv:
-        template = lv.createVM(host, guestName, ipAddress, dataset, sourceSnapshot)
+        template = run(lv.createVM(dataset, sourceSnapshot, guestName, ipAddress,
+                                   bridge, memory, cpus, template))
 
-    return jsonify({'VM': template})
+    return jsonify({'VM': {'template': template}})
+
+
+@app.route('/api/state', methods=['POST'])
+def state() -> Response:
+    """
+    Make state calls to defined domains (e.g., similar to
+    `virsh (start|destroy|undefine|stop)`.
+
+    API Args:
+
+
+    Returns:
+
+    """

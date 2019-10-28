@@ -1,6 +1,6 @@
 <pool type="dir">
-  <name>{1}</name>
+  <name>{}</name>
   <target>
-    <path>{2}</path>
+    <path>{}</path>
   </target>
 </pool>

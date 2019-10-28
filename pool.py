@@ -5,10 +5,10 @@
 Simple ZPool dataset manager for VMs.
 """
 
-from typing import List, Union, Optional
+from typing import List, Optional
 from asyncio.subprocess import PIPE, create_subprocess_shell
+
 from settings import env
-from  functools import lru_cache
 
 import re
 
@@ -68,8 +68,8 @@ class DatasetManager:
         Inject properties into the cloned disk image.
 
         Args:
-            ip:
-            hostname:
+            ip: IP address you wish the VM to have.
+            hostname: Hostname you wish the VM to have.
 
         Returns:
             An optional string, if there was an error during injection.
@@ -102,7 +102,6 @@ class DatasetManager:
                 # We don't care if they didn't exist. Still work checking.
                 pass
 
-    @lru_cache()
     async def getMountPoint(self) -> str:
         """
         Get the mount point of the dataset this instance encapsulates and cache it.
