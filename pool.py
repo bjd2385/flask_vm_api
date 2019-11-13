@@ -85,7 +85,6 @@ class DatasetManager:
             # Now inject data into the disk image.
             await self._getIO(self.hostString + f'\'echo "    address {ip}" >> {env["REMOTE_LOOP_MOUNTPOINT"]}/etc/network/interfaces\'')
             await self._getIO(self.hostString + f'\'echo {hostname} > {env["REMOTE_LOOP_MOUNTPOINT"]}/etc/hostname\'')
-
         except ValueError as err:
             return f'Error {err}'
         finally:
