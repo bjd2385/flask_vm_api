@@ -251,14 +251,19 @@ class LVConn:
         """
         if type(domain) is str:
             try:
-                return self.conn.lookupByName(domain).destroy()
+                vmobj = self.conn.lookupByName(domain)
             except lv.libvirtError as err:
                 return err.get_error_message()
         else:
             try:
-                return self.conn.lookupByID(domain).destroy()
+                vmobj = self.conn.lookupByID(domain)
             except lv.libvirtError as err:
                 return err.get_error_message()
+        m = vmobj.destroy()
+        if m:
+            return m
+
+
 
     def _createStoragePool(self, pooln: str, path: str,
                                  fn: str =env['DEFAULT_POOL_DEFINITION_PATH']) -> str:

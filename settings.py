@@ -20,7 +20,8 @@ env = {
     'UPTIME_CACHE': os.getenv('UPTIME_CACHE'),
     'REMOTE_LOOP_MOUNTPOINT': os.getenv('REMOTE_LOOP_MOUNTPOINT'),
     'DEFAULT_POOL_DEFINITION_PATH': os.getenv('DEFAULT_POOL_DEFINITION_PATH'),
-    'VM_TEMPLATES_DIR': os.getenv('VM_TEMPLATES_DIR')
+    'VM_TEMPLATES_DIR': os.getenv('VM_TEMPLATES_DIR'),
+    'LOG_FILE': os.getenv('LOG_FILE')
 }
 
 env['VALID_HOSTS_MAX'] = len(env['VALID_HOSTS'])
