@@ -347,7 +347,10 @@ def state() -> Response:
     `virsh (start|destroy|undefine|stop)`.
 
     API Args:
-
+        start: Start a domain.
+        stop: Destroy a domain.
+        terminate: Terminate a domain. This also has the optional content of whether
+            or not to delete the domain on-disk (for array cleanup).
 
     Returns:
 

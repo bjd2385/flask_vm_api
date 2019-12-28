@@ -135,6 +135,19 @@ class LVConn:
         else:
             return self.conn.lookupByID(domain).XMLDesc()
 
+    def getPoolXML(self, domain: Union[str, int]) -> str:
+        """
+        Get the XML template for a storage pool.
+
+        Args:
+            domain: ID or name of the domain to return the template for.
+
+        Returns:
+            A string containing the XML.
+        """
+        if type(domain) is str:
+            return self.conn.lookupByName(domain).
+
     def getActiveCores(self) -> int:
         """
         Get the number of assigned cores to VMs.
@@ -229,25 +242,22 @@ class LVConn:
         """
         if type(domain) is str:
             try:
-                return self.conn.lookupByName(domain).shutdown()
+                return self.conn.lookupByName(domain).destroy()
             except lv.libvirtError as err:
                 return err.get_error_message()
         else:
             try:
-                return self.conn.lookupByID(domain).shutdown()
+                return self.conn.lookupByID(domain).destroy()
             except lv.libvirtError as err:
                 return err.get_error_message()
 
-    def terminateVM(self, domain: Union[str, int]) -> str:
+    def terminateVM(self, domain: Union[str, int], delete: bool =False) -> None:
         """
         Destroy a domain, force shutdown.
 
         Args:
-        Args:
-            domain: the respective VM / domain.
-
-        Returns:
-            True if the VM was destroyed, False otherwise.
+            domain: The respective VM / domain.
+            delete: If True, delete the ZFS dataset as well.
         """
         if type(domain) is str:
             try:
@@ -259,11 +269,10 @@ class LVConn:
                 vmobj = self.conn.lookupByID(domain)
             except lv.libvirtError as err:
                 return err.get_error_message()
-        m = vmobj.destroy()
-        if m:
-            return m
-
-
+        vmobj.destroy()
+        if delete:
+            self.conn.
+        vmobj.undefine()
 
     def _createStoragePool(self, pooln: str, path: str,
                                  fn: str =env['DEFAULT_POOL_DEFINITION_PATH']) -> str:
@@ -280,7 +289,6 @@ class LVConn:
         """
         baseDef = asyncCachedTimedFileIO(fn)
         pool = self.conn.storagePoolDefineXML(baseDef.format(pooln, path))
-        print(dir(pool))
         pool.setAutostart(1)
         return self.conn.storagePoolLookupByName(pooln)
 
