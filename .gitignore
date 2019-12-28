@@ -1,2 +1,2 @@
 *.sw[a-z]
-__pycache__
+__pycache__/*
